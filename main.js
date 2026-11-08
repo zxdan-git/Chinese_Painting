@@ -14,10 +14,16 @@ class ChinesePainting {
       this.onWindowResize_();
     }, false);
 
+    window.addEventListener('click', () => {
+      this.onMouseClick_();
+    });
+
     this.scene_ = new THREE.Scene();
 
     this.camera_ = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 1000);
     this.camera_.position.set(0, 0, 1);
+
+    this.start_ = false;
 
     await this.setupProject_();
 
@@ -63,6 +69,10 @@ class ChinesePainting {
         window.innerWidth * dpr, window.innerHeight * dpr);
   }
 
+  onMouseClick_() {
+    this.start_ = true;
+  }
+
   raf_() {
     requestAnimationFrame((t) => {
       if (this.previousRAF_ === null) {
@@ -77,6 +87,9 @@ class ChinesePainting {
   }
 
   step_(timeElapsed) {
+    if(!this.start_) {
+      return;
+    }
     const timeElapsedS = timeElapsed * 0.001;
     this.totalTime_ += timeElapsedS;
 
