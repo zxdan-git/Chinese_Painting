@@ -3,9 +3,12 @@ varying vec2 vUvs;
 
 uniform vec2 resolution;
 uniform float time;
+uniform sampler2D dataTexture;
+uniform float textureHeight;
 
 const float HEIGHT = 1000.0;
 const int MAX_CPS = 10;
+const float TEXTURE_WIDTH = 15.0 + 0.5 * float(MAX_CPS);
 const int BRANCH_DEPTH = 4;
 const int MAX_BRANCH = 100;
 const float GROUND_LEVEL = 200.0;
@@ -19,7 +22,7 @@ const float EPSILON = 1e-9;
 const float INF = 1e30;
 const float PI = 3.14159265358979323846;
 
-const vec2 LIGHT_POS = vec2(0.0, HEIGHT);
+const vec2 LIGHT_POS = vec2(-300.0, HEIGHT * 0.5);
 
 const vec3 RED = vec3(1.0, 0.0, 0.0);
 const vec3 PINK = vec3(1.0, 0.4, 0.4);
@@ -37,17 +40,99 @@ const float FLOWER_RAIN_TIME = 3.0;
 
 const int FLOWER_NUM = 20;
 
-struct BranchInfo {
-  vec2 localPosition;
-  vec2 controlPoints[MAX_CPS];
-  int controlPointsNum;
+struct BranchData {
+  mat3 worldToLocal;
+  mat3 localToParent;
   float startWidth;
+  float endWidth;
   vec3 startColor;
+  vec3 endColor;
   float startTime;
-  vec3 seed;
-  int depth;
-  vec2 lightLocalPos;
+  float endTime;
+  int controlPointsNum;
+  vec2 controlPoints[MAX_CPS];
+  int childNum;
+  float childIdx[8];
+  int flowerNum;
+  float flowerIdx[7];
+  float boundingBox[4];
+  float bvh[4];
 };
+
+vec2 texCoord(float i, float j) {
+  return vec2((j + 0.5) / TEXTURE_WIDTH, (i + 0.5) / textureHeight);
+}
+
+mat3 getMat3(float i, float j) {
+  vec4 c1 = texture2D(dataTexture, texCoord(i, j));
+  vec4 c2 = texture2D(dataTexture, texCoord(i, j + 1.0));
+  vec4 c3 = texture2D(dataTexture, texCoord(i, j + 2.0));
+  return mat3(c1.x, c1.y, c1.z, c2.x, c2.y, c2.z, c3.x, c3.y, c3.z);
+}
+
+BranchData getBranchData(float i) {
+  BranchData data;
+  data.worldToLocal = getMat3(i, 0.0);
+  data.localToParent = getMat3(i, 3.0);
+
+  vec4 c = texture2D(dataTexture, texCoord(i, 6.0));
+  data.startColor = c.xyz;
+  data.startWidth = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 7.0));
+  data.endColor = c.xyz;
+  data.endWidth = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 8.0));
+  data.startTime = c.x;
+  data.endTime = c.y;
+  data.controlPointsNum = int(c.z);
+  data.childNum = int(c.w);
+
+  for (int j = 0; j < MAX_CPS; j += 2) {
+    c = texture2D(dataTexture, texCoord(i, 9.0 + float(j) / 2.0));
+    data.controlPoints[j] = c.xy;
+    data.controlPoints[j + 1] = c.zw;
+  }
+
+  c = texture2D(dataTexture, texCoord(i, 9.0 + 0.5 * float(MAX_CPS)));
+  data.boundingBox[0] = c.x;
+  data.boundingBox[1] = c.y;
+  data.boundingBox[2] = c.z;
+  data.boundingBox[3] = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 10.0 + 0.5 * float(MAX_CPS)));
+  data.bvh[0] = c.x;
+  data.bvh[1] = c.y;
+  data.bvh[2] = c.z;
+  data.bvh[3] = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 11.0 + 0.5 * float(MAX_CPS)));
+  data.childIdx[0] = c.x;
+  data.childIdx[1] = c.y;
+  data.childIdx[2] = c.z;
+  data.childIdx[3] = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 12.0 + 0.5 * float(MAX_CPS)));
+  data.childIdx[4] = c.x;
+  data.childIdx[5] = c.y;
+  data.childIdx[6] = c.z;
+  data.childIdx[7] = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 13.0 + 0.5 * float(MAX_CPS)));
+  data.flowerNum = int(c.x);
+  data.flowerIdx[0] = c.y;
+  data.flowerIdx[1] = c.z;
+  data.flowerIdx[2] = c.w;
+
+  c = texture2D(dataTexture, texCoord(i, 14.0 + 0.5 * float(MAX_CPS)));
+  data.flowerIdx[3] = c.x;
+  data.flowerIdx[4] = c.y;
+  data.flowerIdx[5] = c.z;
+  data.flowerIdx[6] = c.w;
+
+  return data;
+}
 
 vec2 toPixel(vec2 uv) {
   float width = resolution.x * HEIGHT / resolution.y;
@@ -339,6 +424,20 @@ float sdfPetal(vec2 p, float r, float width) {
   return max(d1, d2);
 }
 
+float sdfBoundingBox(vec2 p, float boundingBox[4]) {
+  float distLeft = p.x - boundingBox[0];
+  float distRight = p.x - boundingBox[1];
+  float distBottom = p.y - boundingBox[2];
+  float distTop = p.y - boundingBox[3];
+  float dist = min(abs(distLeft), abs(distRight));
+  dist = min(dist, abs(distBottom));
+  dist = min(dist, abs(distTop));
+  if (distLeft > 0.0 && distRight < 0.0 && distBottom > 0.0 && distTop < 0.0) {
+    dist *= -1.0;
+  }
+  return dist;
+}
+
 // Scene.
 vec3 background() {
   vec2 distCenter = abs(vUvs - 0.5);
@@ -385,119 +484,57 @@ vec3 trunk(vec2 p, vec3 color) {
   return color;
 }
 
-vec3 branch(BranchInfo info, vec3 color) {
+vec3 drawBoundingBox(vec2 p, float boundingBox[4], vec3 boxColor, vec3 color) {
+  float d = sdfBoundingBox(p, boundingBox);
+  vec3 color1 = mix(color, boxColor, smoothstep(-10.0, -5.0, d));
+  color = mix(color1, color, smoothstep(-5.0, 0.0, d));
+  return color;
+}
+
+vec3 drawBranch(vec2 p, BranchData data, vec3 color) {
+  vec2 pLocal = (data.worldToLocal * vec3(p, 1.0)).xy;
   float t = 0.0;
-  float ld = sdfCurve(info.localPosition, info.controlPoints,
-                      info.controlPointsNum, t);
-  float width = info.startWidth * (1.0 - t) + 0.1 * info.startWidth * t;
-  float timer = smoothstep(info.startTime, info.startTime + BRANCH_TIME, time);
-  width *= smoothstep(t, 1.0, timer);
+  float ld = sdfCurve(pLocal, data.controlPoints, data.controlPointsNum, t);
+  float width = mix(data.startWidth, data.endWidth, t);
+  float timer = smoothstep(data.startTime, data.endTime, time);
+  width *= smoothstep(t, 1.0, timer + 0.01);
   float ldValue = smoothstep(0.8 * width, width, ld);
-  color = mix(mix(info.startColor, vec3(0.6), t), color, ldValue);
+  color = mix(mix(data.startColor, data.endColor, t), color, ldValue);
   if (ld <= width) {
-    vec2 ori = curve(info.controlPoints, info.controlPointsNum, t);
+    vec2 ori = curve(data.controlPoints, data.controlPointsNum, t);
     float z = sqrt(width * width - ld * ld);
-    vec3 normal = normalize(vec3(info.localPosition - ori, z));
-    vec3 lightDir =
-        vec3(normalize(info.lightLocalPos - info.localPosition), 0.0);
+    vec3 normal = normalize(vec3(pLocal - ori, z));
+    vec2 localLight = (data.worldToLocal * vec3(LIGHT_POS, 1.0)).xy;
+    vec3 lightDir = vec3(normalize(localLight - pLocal), 0.0);
     color = mix(color, PINK, smoothstep(0.2, 1.0, dot(lightDir, normal)));
   }
 
-  vec3 rand = unifyHash(hash(info.seed));
-  int flowerNum = int(mix(3.0, 5.0, rand.x));
-  for (int i = 0; i < flowerNum; i++) {
-    vec3 seedi =
-        info.seed + length(info.seed) * vec3(float(i + 1)) / float(flowerNum);
-    vec3 randi = unifyHash(hash(seedi));
-    float tFlower = mix(0.4, 0.9, randi.x);
-    float angleFlower = PI * randi.y;
-    float scaleFlower = mix(2.0, 7.0, randi.z);
-    float flowerTime = info.startTime + BRANCH_TIME * tFlower;
-    vec2 flowerPos = curve(info.controlPoints, info.controlPointsNum, tFlower);
-    color = flower(
-        (rotate(angleFlower) * vec3(info.localPosition - flowerPos, 1.0)).xy /
-            scaleFlower,
-        flowerTime, color);
-  }
   return color;
 }
 
-vec3 buildBranch(BranchInfo info, vec3 color) {
-  BranchInfo infos[MAX_BRANCH];
-  infos[0] = info;
+vec3 drawTree(vec2 p, vec3 color) {
+  float stack[500];
+  stack[0] = 0.0;
   int stackTop = 1;
   while (stackTop > 0) {
-    info = infos[--stackTop];
-    color = branch(info, color);
-    if (info.depth == 3) {
-      continue;
+    BranchData data = getBranchData(stack[--stackTop]);
+    vec2 pLocal = (data.worldToLocal * vec3(p, 1.0)).xy;
+    float d = sdfBoundingBox(pLocal, data.bvh);
+    if (d < 0.0) {
+      d = sdfBoundingBox(pLocal, data.boundingBox);
+      if (d < 0.0) {
+        color = drawBranch(p, data, color);
+      }
+      for (int i = 0; i < data.childNum; i++) {
+        stack[stackTop++] = data.childIdx[i];
+      }
     }
-    float l = length(info.controlPoints[info.controlPointsNum - 1] -
-                     info.controlPoints[0]);
-    int subNum =
-        int(mix(1.0, 5.0, remap(noise(info.seed), -1.0, 1.0, 0.0, 1.0)));
-    for (int i = 0; i < subNum; i++) {
-      vec3 seedi =
-          info.seed + length(info.seed) * vec3(float(i + 1)) / float(subNum);
-      vec3 rand = unifyHash(hash(seedi));
-      float angle =
-          mix(PI / 4.0, PI / 3.0, rand.x) * (2.0 * step(0.5, rand.z) - 1.0);
-      float ti = rand.y;
-      vec2 ori = curve(info.controlPoints, info.controlPointsNum, ti);
-      BranchInfo subInfo;
-      subInfo.localPosition =
-          (rotate(angle) * vec3(info.localPosition - ori, 1.0)).xy;
-      subInfo.lightLocalPos =
-          (rotate(angle) * vec3(info.lightLocalPos - ori, 1.0)).xy;
-      float li = mix(0.8, 0.2, ti) * l;
-      subInfo.controlPoints[0] = vec2(0.0);
-      subInfo.controlPoints[1] = vec2(0.0, mix(0.1, 0.5, rand.x) * li);
-      subInfo.controlPoints[2] = vec2(mix(0.1, 0.25, rand.z) * sign(angle) * li,
-                                      mix(0.5, 0.6, rand.x) * li);
-      subInfo.controlPoints[3] =
-          vec2(mix(0.0, 0.1, rand.z) * sign(angle) * li, li);
-      subInfo.controlPointsNum = 4;
-      amendControlPoints(subInfo.controlPoints, subInfo.controlPointsNum);
-      subInfo.startWidth =
-          info.startWidth * (1.0 - ti) + 0.1 * info.startWidth * ti;
-      subInfo.startColor = mix(info.startColor, vec3(0.4), ti);
-      subInfo.startTime = info.startTime + BRANCH_TIME * ti;
-      subInfo.seed = seedi;
-      subInfo.depth = info.depth + 1;
-      infos[stackTop++] = subInfo;
-    }
-  }
-  return color;
-}
 
-vec3 tree(vec2 p, float maxBranchLen, vec3 color) {
-  if (time < INK_TIME) {
-    return color;
-  }
-  color = trunk(p, color);
-  for (int i = 0; i < 5; i++) {
-    vec2 ori = vec2(0.0, TRUNK_HEIGHT);
-    vec3 seedi = vec3(ori, length(ori) * float(i));
-    vec3 rand = unifyHash(hash(seedi));
-    float angle = mix(-PI / 3.0, PI / 3.0, (float(i) + rand.z) / 5.0);
-    float ti = rand.y;
-    BranchInfo info;
-    info.localPosition = (rotate(angle) * vec3(p - ori, 1.0)).xy;
-    info.lightLocalPos = (rotate(angle) * vec3(LIGHT_POS - ori, 1.0)).xy;
-    float li = mix(0.8, 1.0, rand.z) * maxBranchLen;
-    info.controlPoints[0] = vec2(0.0);
-    info.controlPoints[1] = vec2(0.0, mix(0.1, 0.5, rand.x) * li);
-    info.controlPoints[2] = vec2(mix(0.1, 0.2, rand.z) * sign(angle) * li,
-                                 mix(0.5, 0.6, rand.x) * li);
-    info.controlPoints[3] = vec2(mix(0.0, 0.1, rand.z) * sign(angle) * li, li);
-    info.controlPointsNum = 4;
-    amendControlPoints(info.controlPoints, info.controlPointsNum);
-    info.startWidth = TRUNK_END_WIDTH * 0.5;
-    info.startColor = BLACK;
-    info.startTime = INK_TIME + TRUNK_TIME;
-    info.seed = seedi;
-    info.depth = 1;
-    color = buildBranch(info, color);
+    for (int i = 0; i < data.flowerNum; i++) {
+      BranchData flowerData = getBranchData(data.flowerIdx[i]);
+      vec2 pFlower = (flowerData.worldToLocal * vec3(p, 1.0)).xy;
+      color = flower(pFlower, flowerData.startTime, color);
+    }
   }
   return color;
 }
@@ -553,7 +590,7 @@ vec3 ink(vec2 p, vec3 color) {
 
 vec3 scene(vec2 p, vec3 color) {
   color = mountain(p, color);
-  color = tree(p, MAIN_BRANCH_LENGTH, color);
+  color = drawTree(p, color);
   color = flowerRain(p, color);
   color = ink(p, color);
   return color;
@@ -563,13 +600,11 @@ void main() {
   vec2 p = toPixel(vUvs);
   vec3 color = background();
 
-  if (p.y > 0.0) {
-    color = scene(p - vec2(0.0, 1.0), color);
-  } else {
-    color = scene(vec2(p.x, -2.0 * remap(sin(p.y / 10.0 + time), -1.0, 1.0,
-                                         -GROUND_LEVEL, 0.0)),
+  if (p.y > 1.0) {
+    color = scene(p, color);
+  } else if (p.y < 0.0) {
+    color = scene(vec2(p.x + 0.08 * p.y * sin(p.y * 0.08 + time), -2.0 * p.y),
                   color);
   }
-
   gl_FragColor = vec4(color, 1.0);
 }

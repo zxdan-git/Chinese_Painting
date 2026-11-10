@@ -1,4 +1,5 @@
 import * as THREE from 'https://cdn.skypack.dev/three@0.136';
+import { TreeDataGenerator } from './TreeDataGenerator.js';
 
 
 class ChinesePainting {
@@ -25,6 +26,8 @@ class ChinesePainting {
 
     this.start_ = false;
 
+    this.treeDataGenerator = new TreeDataGenerator();
+
     await this.setupProject_();
 
     this.previousRAF_ = null;
@@ -40,6 +43,8 @@ class ChinesePainting {
       uniforms: {
         resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
         time: { value: 0.0 },
+        dataTexture: {value: this.treeDataGenerator.texture},
+        textureHeight: {value: this.treeDataGenerator.height},
       },
       vertexShader: await vsh.text(),
       fragmentShader: await fsh.text()
